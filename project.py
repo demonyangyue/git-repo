@@ -35,8 +35,8 @@ from error import GitError, HookError, UploadError
 from error import ManifestInvalidRevisionError
 from error import NoManifestException
 from trace import IsTrace, Trace
-
 from git_refs import GitRefs, HEAD, R_HEADS, R_TAGS, R_PUB, R_M
+import portable
 
 from pyversion import is_python3
 if not is_python3():
@@ -54,6 +54,8 @@ def _lwrite(path, content):
     fd.close()
 
   try:
+    if os.path.exists(path):
+      os.remove(path)      
     os.rename(lock, path)
   except OSError:
     os.remove(lock)
@@ -61,7 +63,7 @@ def _lwrite(path, content):
 
 def _error(fmt, *args):
   msg = fmt % args
-  print('error: %s' % msg, file=sys.stderr)
+  print('error in project: %s' % msg, file=sys.stderr)
 
 def not_rev(r):
   return '^' + r
@@ -252,7 +254,7 @@ class _LinkFile(object):
           dest_dir = os.path.dirname(dest)
           if not os.path.isdir(dest_dir):
             os.makedirs(dest_dir)
-        os.symlink(src, dest)
+        portable.os_link(src, dest)
       except IOError:
         _error('Cannot link file %s to %s', src, dest)
 
@@ -1058,7 +1060,7 @@ class Project(object):
       quiet=False,
       is_new=None,
       current_branch_only=False,
-      clone_bundle=True,
+      clone_bundle=False,
       no_tags=False,
       archive=False):
     """Perform only the network IO portion of the sync process.
@@ -2158,37 +2160,38 @@ class Project(object):
       self._InitHooks()
 
   def _InitHooks(self):
-    hooks = os.path.realpath(self._gitdir_path('hooks'))
-    if not os.path.exists(hooks):
-      os.makedirs(hooks)
-    for stock_hook in _ProjectHooks():
-      name = os.path.basename(stock_hook)
+    #hooks = os.path.realpath(self._gitdir_path('hooks'))
+    #if not os.path.exists(hooks):
+    #  os.makedirs(hooks)
+    #for stock_hook in _ProjectHooks():
+    #  name = os.path.basename(stock_hook)
 
-      if name in ('commit-msg',) and not self.remote.review \
-            and not self is self.manifest.manifestProject:
-        # Don't install a Gerrit Code Review hook if this
-        # project does not appear to use it for reviews.
-        #
-        # Since the manifest project is one of those, but also
-        # managed through gerrit, it's excluded
-        continue
+    #  if name in ('commit-msg',) and not self.remote.review \
+    #        and not self is self.manifest.manifestProject:
+    #    # Don't install a Gerrit Code Review hook if this
+    #    # project does not appear to use it for reviews.
+    #    #
+    #    # Since the manifest project is one of those, but also
+    #    # managed through gerrit, it's excluded
+    #    continue
 
-      dst = os.path.join(hooks, name)
-      if os.path.islink(dst):
-        continue
-      if os.path.exists(dst):
-        if filecmp.cmp(stock_hook, dst, shallow=False):
-          os.remove(dst)
-        else:
-          _error("%s: Not replacing %s hook", self.relpath, name)
-          continue
-      try:
-        os.symlink(os.path.relpath(stock_hook, os.path.dirname(dst)), dst)
-      except OSError as e:
-        if e.errno == errno.EPERM:
-          raise GitError('filesystem must support symlinks')
-        else:
-          raise
+    #  dst = os.path.join(hooks, name)
+    #  if os.path.islink(dst):
+    #    continue
+    #  if os.path.exists(dst):
+    #    if filecmp.cmp(stock_hook, dst, shallow=False):
+    #      os.remove(dst)
+    #    else:
+    #      _error("%s: Not replacing %s hook", self.relpath, name)
+    #      continue
+    #  try:
+    #    portable.os_link(stock_hook, dst)
+    #  except OSError as e:
+    #    if e.errno == errno.EPERM:
+    #      raise GitError('filesystem must support symlinks')
+    #    else:
+    #      raise
+    pass
 
   def _InitRemote(self):
     if self.remote.url:
@@ -2270,7 +2273,7 @@ class Project(object):
             pass
 
         if name in to_symlink:
-          os.symlink(os.path.relpath(src, os.path.dirname(dst)), dst)
+          portable.os_link(src, dst)
         elif copy_all and not os.path.islink(dst):
           if os.path.isdir(src):
             shutil.copytree(src, dst)
@@ -2286,6 +2289,15 @@ class Project(object):
     dotgit = os.path.join(self.worktree, '.git')
     if not os.path.exists(dotgit):
       os.makedirs(dotgit)
+      # create dir - since on Linux a broken link will be created, which is not allowed on windows
+      rr_cache = os.path.join(self.gitdir, 'rr-cache')
+      if not os.path.exists(rr_cache):
+        os.makedirs(rr_cache)
+      packed_refs = os.path.join(self.gitdir, 'packed-refs')
+      if not os.path.exists(packed_refs):
+        fd = open(packed_refs, "w")
+        fd.close()
+
       self._ReferenceGitDir(self.gitdir, dotgit, share_refs=True,
                             copy_all=False)
 
@@ -2428,7 +2440,7 @@ class Project(object):
       else:
         path = os.path.join(self._project.worktree, '.git', HEAD)
       try:
-        fd = open(path, 'rb')
+        fd = open(path, 'r')
       except IOError as e:
         raise NoManifestException(path, str(e))
       try:
